@@ -19,6 +19,7 @@ import static com.google.android.exoplayer2.util.Assertions.checkNotNull;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.MediaCodec;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Pair;
@@ -39,8 +40,10 @@ import com.google.android.exoplayer2.PlaybackPreparer;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.RenderersFactory;
 import com.google.android.exoplayer2.SimpleExoPlayer;
+import com.google.android.exoplayer2.analytics.AnalyticsListener;
 import com.google.android.exoplayer2.audio.AudioAttributes;
 import com.google.android.exoplayer2.drm.FrameworkMediaDrm;
+import com.google.android.exoplayer2.drm.MediaDrmCallbackException;
 import com.google.android.exoplayer2.ext.ima.ImaAdsLoader;
 import com.google.android.exoplayer2.mediacodec.MediaCodecRenderer.DecoderInitializationException;
 import com.google.android.exoplayer2.mediacodec.MediaCodecUtil.DecoderQueryException;
@@ -57,6 +60,7 @@ import com.google.android.exoplayer2.ui.DebugTextViewHelper;
 import com.google.android.exoplayer2.ui.StyledPlayerControlView;
 import com.google.android.exoplayer2.ui.StyledPlayerView;
 import com.google.android.exoplayer2.upstream.DataSource;
+import com.google.android.exoplayer2.upstream.HttpDataSource;
 import com.google.android.exoplayer2.util.ErrorMessageProvider;
 import com.google.android.exoplayer2.util.EventLogger;
 import com.google.android.exoplayer2.util.Util;
@@ -101,6 +105,8 @@ public class PlayerActivity extends AppCompatActivity
   private boolean startAutoPlay;
   private int startWindow;
   private long startPosition;
+
+  private Exception drmLastError;
 
   // Fields used only for ad playback. The ads loader is loaded via reflection.
 
@@ -301,6 +307,13 @@ public class PlayerActivity extends AppCompatActivity
               .build();
       player.addListener(new PlayerEventListener());
       player.addAnalyticsListener(new EventLogger(trackSelector));
+      player.addAnalyticsListener(new AnalyticsListener() {
+        @Override
+        public void onDrmSessionManagerError(EventTime eventTime, Exception error) {
+          drmLastError = error;
+        }
+      });
+
       player.setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus= */ true);
       player.setPlayWhenReady(startAutoPlay);
       playerView.setPlayer(player);
@@ -459,6 +472,15 @@ public class PlayerActivity extends AppCompatActivity
     return false;
   }
 
+  private static boolean isPlaybackSessionClosed(ExoPlaybackException e, Exception drmError) {
+    if (e.getCause() instanceof MediaCodec.CryptoException && drmError.getCause() instanceof HttpDataSource.InvalidResponseCodeException) {
+      HttpDataSource.InvalidResponseCodeException httpError = (HttpDataSource.InvalidResponseCodeException) drmError.getCause();
+      return httpError.responseCode == 412;
+    } else {
+      return false;
+    }
+  }
+
   private class PlayerEventListener implements Player.EventListener {
 
     @Override
@@ -474,6 +496,10 @@ public class PlayerActivity extends AppCompatActivity
       if (isBehindLiveWindow(e)) {
         clearStartPosition();
         initializePlayer();
+      } else if (isPlaybackSessionClosed(e, drmLastError)) {
+        // handle closed playback session here
+        updateButtonVisibility();
+        showControls();
       } else {
         updateButtonVisibility();
         showControls();
